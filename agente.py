@@ -180,25 +180,26 @@ def responder(mensaje, anterior_id=None):
     return interaccion
 
 
-print('Asistente de viáticos. Escribe "salir" para terminar.\n')
+if __name__ == "__main__":
+    print('Asistente de viáticos. Escribe "salir" para terminar.\n')
 
-# Si se pasa una pregunta como argumento, es el primer mensaje de la conversación.
-mensaje = " ".join(sys.argv[1:]).strip()
-anterior_id = None
+    # Si se pasa una pregunta como argumento, es el primer mensaje de la conversación.
+    mensaje = " ".join(sys.argv[1:]).strip()
+    anterior_id = None
 
-while True:
-    if not mensaje:
-        try:
-            mensaje = input("Tú: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
+    while True:
         if not mensaje:
-            continue
-    if mensaje.lower() in SALIR:
-        break
+            try:
+                mensaje = input("Tú: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not mensaje:
+                continue
+        if mensaje.lower() in SALIR:
+            break
 
-    interaccion = responder(mensaje, anterior_id)
-    anterior_id = interaccion.id
-    print(f"\nAsistente: {interaccion.output_text}\n")
-    mensaje = ""
+        interaccion = responder(mensaje, anterior_id)
+        anterior_id = interaccion.id
+        print(f"\nAsistente: {interaccion.output_text}\n")
+        mensaje = ""
