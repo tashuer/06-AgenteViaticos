@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import subprocess
 import sys
 import unicodedata
 from datetime import date
@@ -14,12 +15,14 @@ RUTA_INSTRUCCIONES = Path(__file__).parent / "prompts" / "sistema.md"
 RUTA_CONOCIMIENTO = Path(__file__).parent / "conocimiento"
 RUTA_GASTOS = RUTA_CONOCIMIENTO / "gastos.csv"
 RUTA_SOLICITUDES = Path(__file__).parent / "solicitudes.csv"
+RUTA_SKILLS = Path(__file__).parent / ".claude" / "skills"
 CAMPOS_SOLICITUD = [
     "radicado", "fecha_registro", "empleado", "ciudad", "fecha_salida",
     "noches", "motivo", "estado",
 ]
 ESTADO_SOLICITUD = "Pendiente de aprobación del jefe inmediato"
 MAX_VUELTAS = 5
+TIMEOUT_SCRIPT = 60
 
 
 def cargar_documentos():
@@ -75,9 +78,67 @@ def registrar_solicitud(empleado, ciudad, fecha_salida, noches, motivo):
     return {"radicado": radicado}
 
 
+def leer_encabezado(texto):
+    """Devuelve los campos name y description del encabezado --- de un SKILL.md."""
+    campos = {}
+    lineas = texto.splitlines()
+    if lineas and lineas[0].strip() == "---":
+        for linea in lineas[1:]:
+            if linea.strip() == "---":
+                break
+            clave, _, valor = linea.partition(":")
+            campos[clave.strip()] = valor.strip()
+    return campos
+
+
+def listar_skills():
+    skills = []
+    if RUTA_SKILLS.is_dir():
+        for carpeta in sorted(RUTA_SKILLS.iterdir()):
+            ruta = carpeta / "SKILL.md"
+            if ruta.is_file():
+                campos = leer_encabezado(ruta.read_text(encoding="utf-8"))
+                skills.append((campos.get("name", carpeta.name), campos.get("description", "")))
+    return skills
+
+
+def ruta_dentro_de(base, nombre):
+    """Resuelve base/nombre y falla si el resultado queda fuera de base."""
+    ruta = (base / nombre).resolve()
+    if base.resolve() not in ruta.parents:
+        raise ValueError(f"Ruta fuera de la carpeta permitida: {nombre}")
+    return ruta
+
+
+def cargar_skill(nombre):
+    print(f"[skill] cargando {nombre}")
+    ruta = ruta_dentro_de(RUTA_SKILLS, f"{nombre}/SKILL.md")
+    if not ruta.is_file():
+        raise ValueError(f"No existe la skill: {nombre}")
+    return {"contenido": ruta.read_text(encoding="utf-8")}
+
+
+def ejecutar_script(skill, script, argumento=None):
+    print(f"[script] ejecutando {skill}/{script}")
+    carpeta_scripts = ruta_dentro_de(RUTA_SKILLS, f"{skill}/scripts")
+    ruta = ruta_dentro_de(carpeta_scripts, script)
+    if ruta.suffix != ".py" or not ruta.is_file():
+        raise ValueError(f"No existe el script {script} en scripts/ de la skill {skill}")
+    comando = [sys.executable, "-X", "utf8", str(ruta)]
+    if argumento:
+        comando.append(argumento)
+    corrida = subprocess.run(
+        comando, cwd=RUTA_CONOCIMIENTO.parent, capture_output=True, text=True,
+        encoding="utf-8", timeout=TIMEOUT_SCRIPT,
+    )
+    return {"codigo_salida": corrida.returncode, "salida": corrida.stdout, "errores": corrida.stderr}
+
+
 FUNCIONES = {
     "sumar_gastos": sumar_gastos,
     "registrar_solicitud": registrar_solicitud,
+    "cargar_skill": cargar_skill,
+    "ejecutar_script": ejecutar_script,
 }
 
 HERRAMIENTAS = [
@@ -124,13 +185,60 @@ HERRAMIENTAS = [
             "required": ["empleado", "ciudad", "fecha_salida", "noches", "motivo"],
         },
     },
+    {
+        "type": "function",
+        "name": "cargar_skill",
+        "description": (
+            "Devuelve el contenido completo del SKILL.md de una skill disponible. "
+            "Úsala siempre antes de usar esa skill, para leer sus instrucciones."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre de la skill, tal como aparece en la lista de skills."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "ejecutar_script",
+        "description": (
+            "Ejecuta con Python un script de la carpeta scripts/ de una skill y devuelve "
+            "lo que imprime. Solo ejecuta scripts de esa carpeta; úsala cuando el SKILL.md "
+            "de la skill indique correr un script."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Nombre de la skill dueña del script."},
+                "script": {"type": "string", "description": "Nombre del archivo dentro de scripts/, por ejemplo validar.py."},
+                "argumento": {"type": "string", "description": "Argumento para el script, por ejemplo la ruta de un CSV. Omítelo si no lleva."},
+            },
+            "required": ["skill", "script"],
+        },
+    },
 ]
+
+
+def describir_skills():
+    lista = "\n".join(f"- {nombre}: {descripcion}" for nombre, descripcion in listar_skills())
+    return (
+        "<skills>\n"
+        "Tienes estas skills disponibles:\n"
+        f"{lista}\n\n"
+        "Antes de usar una skill, cárgala con cargar_skill y sigue sus instrucciones. "
+        "Cuando uses una skill, el formato de la skill reemplaza al de <formato>.\n"
+        "</skills>"
+    )
 
 
 INSTRUCCIONES = (
     RUTA_INSTRUCCIONES.read_text(encoding="utf-8").strip()
     + "\n\n"
     + cargar_documentos()
+    + "\n\n"
+    + describir_skills()
 )
 
 load_dotenv()
